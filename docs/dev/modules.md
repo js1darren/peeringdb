@@ -1,4 +1,4 @@
-Generated on 2023-04-12 10:09:44.563425
+Generated on 2025-01-14 18:57:08.992842
 
 ## [admin.py](/docs/dev/modules/admin.py.md)
 
@@ -45,6 +45,12 @@ Specify custom fields to be added to the generated open-api schema.
 
 Django apps configuration.
 
+## [auth.py](/docs/dev/modules/auth.py.md)
+
+Authentication utilities for securing API access.
+
+Provides decorators to enforce Basic Authentication or API Key Authentication on IX-F import preview.
+
 ## [autocomplete_views.py](/docs/dev/modules/autocomplete_views.py.md)
 
 Autocomplete views.
@@ -56,6 +62,10 @@ Note: Quick search behavior is specified in search.py
 ## [context.py](/docs/dev/modules/context.py.md)
 
 Define custom context managers.
+
+## [context_processors.py](/docs/dev/modules/context_processors.py.md)
+
+# Functions
 
 ## [data_views.py](/docs/dev/modules/data_views.py.md)
 
@@ -75,7 +85,15 @@ Split read and write database connections if needed.
 DeskPro API Client used to post and retrieve support ticket information
 from the deskpro API.
 
+## [documents.py](/docs/dev/modules/documents.py.md)
+
+# Functions
+
 ## [exceptions.py](/docs/dev/modules/exceptions.py.md)
+
+# Functions
+
+## [export_kmz.py](/docs/dev/modules/export_kmz.py.md)
 
 # Functions
 
@@ -98,7 +116,7 @@ Utilities for geocoding and geo normalization.
 
 ## [import_views.py](/docs/dev/modules/import_views.py.md)
 
-Define ix-f import preview, review and post-mortem views.
+Define IX-F import preview, review and post-mortem views.
 
 ## [inet.py](/docs/dev/modules/inet.py.md)
 
@@ -112,7 +130,7 @@ Prefix renumbering.
 
 IX-F importer implementation.
 
-Handles import of ix-f feeds, creation of suggestions for networks and exchanges
+Handles import of IX-F feeds, creation of suggestions for networks and exchanges
 to follow.
 
 Handles notifications of networks and exchanges as part of that process.
@@ -228,6 +246,15 @@ Refer to search_indexes.py for search index definition.
 ## [search_indexes.py](/docs/dev/modules/search_indexes.py.md)
 
 Defines django-haystack search indexes.
+
+## [search_v2.py](/docs/dev/modules/search_v2.py.md)
+
+Search v2 implementation used for the PeeringDB top search bar.
+
+This module constructs and executes advanced Elasticsearch queries with
+support for geo-based filtering, keyword logic (AND/OR), and partial
+IPv6 matching. It includes functionality to prioritize exact and "OR"
+term matches and organizes results alphabetically.
 
 ## [serializers.py](/docs/dev/modules/serializers.py.md)
 

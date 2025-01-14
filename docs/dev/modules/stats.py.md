@@ -1,4 +1,4 @@
-Generated from stats.py on 2023-04-12 10:09:44.702367
+Generated from stats.py on 2025-01-14 18:57:09.295754
 
 # peeringdb_server.stats
 
@@ -11,6 +11,12 @@ Load and maintain global stats (displayed in peeringdb footer).
 `def gen_stats()`
 
 Regenerates global statics to stats.__STATS['data']
+
+---
+## reset_stats
+`def reset_stats()`
+
+Resets global stats to empty. Useful to reset for testing purposes.
 
 ---
 ## stats

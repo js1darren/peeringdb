@@ -1,0 +1,9 @@
+User {{ user.username }} tried to delete the following object:
+
+{{ instance.HandleRef.tag }}-{{ instance.id }}: {{ instance }}
+
+The deletion was prevented because of the following reason(s):
+
+{{ instance.not_deletable_reason }}
+
+<a href="{{ admin_url }}">{{ admin_url }}</a>

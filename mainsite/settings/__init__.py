@@ -5,7 +5,9 @@ import sys
 
 import django.conf.global_settings
 import django.conf.locale
+import redis
 import structlog
+import urllib3
 
 from mainsite.oauth2.scopes import SupportedScopes
 
@@ -229,9 +231,20 @@ def set_from_file(name, path, default=_DEFAULT_ARG, envvar_type=None):
     set_option(name, value, envvar_type)
 
 
+def can_ping_redis(host, port, password):
+    """
+    Check if Redis is available.
+    """
+    client = redis.StrictRedis(host=host, port=port, password=password)
+    try:
+        return client.ping()
+    except redis.ConnectionError:
+        return False
+
+
 def get_cache_backend(cache_name):
     """
-    Function to get cache backend based on environment variable
+    Function to get cache backend based on environment variable.
     """
     cache_backend = globals().get(f"{cache_name.upper()}_CACHE_BACKEND", "RedisCache")
 
@@ -244,21 +257,44 @@ def get_cache_backend(cache_name):
         options["CULL_FREQUENCY"] = 10
 
     if cache_backend == "RedisCache":
-        return {
-            "BACKEND": "django.core.cache.backends.redis.RedisCache",
-            "LOCATION": f"redis://:{REDIS_PASSWORD}@{REDIS_HOST}:{REDIS_PORT}",
-            "OPTIONS": {},
-        }
-    elif cache_backend == "LocMemCache":
+        print_debug(f"Checking if Redis is available for {cache_name}")
+        if can_ping_redis(REDIS_HOST, REDIS_PORT, REDIS_PASSWORD):
+            print_debug("Was able to ping Redis, using RedisCache")
+            return {
+                "BACKEND": "django.core.cache.backends.redis.RedisCache",
+                "LOCATION": f"redis://:{REDIS_PASSWORD}@{REDIS_HOST}:{REDIS_PORT}",
+                "OPTIONS": {},
+            }
+        else:
+            # fall back to DatabseCache if cache_name is sessions else
+            # LocMemCache
+            cache_backend = (
+                "DatabaseCache" if cache_name == "session" else "LocMemCache"
+            )
+            print_debug(
+                f"Was not able to ping Redis for {cache_name}, falling back to {cache_backend}"
+            )
+
+    if cache_backend == "LocMemCache":
         return {
             "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
             "LOCATION": cache_name,
             "OPTIONS": options,
         }
-    elif cache_backend == "DatabaseCache":
+
+    if cache_backend == "DatabaseCache":
         return {
             "BACKEND": "django.core.cache.backends.db.DatabaseCache",
             "LOCATION": "django_cache",
+            "OPTIONS": options,
+        }
+
+    if cache_backend.startswith("DatabaseCache."):
+        _, location = cache_backend.split(".", 1)
+
+        return {
+            "BACKEND": "django.core.cache.backends.db.DatabaseCache",
+            "LOCATION": location.strip(),
             "OPTIONS": options,
         }
 
@@ -312,15 +348,27 @@ set_option("DATABASE_PASSWORD", "")
 # redis
 set_option("REDIS_HOST", "127.0.0.1")
 set_option("REDIS_PORT", "6379")
-set_from_env("REDIS_PASSWORD")
+set_from_env("REDIS_PASSWORD", "")
 
 # API Cache
 set_option("API_CACHE_ENABLED", True)
 set_option("API_CACHE_ROOT", os.path.join(BASE_DIR, "api-cache"))
 set_option("API_CACHE_LOG", os.path.join(BASE_DIR, "var/log/api-cache.log"))
 
+# KMZ export file
+set_option("KMZ_EXPORT_FILE", os.path.join(API_CACHE_ROOT, "peeringdb.kmz"))
+set_option("KMZ_DOWNLOAD_PATH", "^export/kmz/$")
+if RELEASE_ENV == "dev":
+    # setting to blank means KMZ_DOWNLOAD_PATH is used instead and
+    # the file is served from the local filesystem
+    set_option("KMZ_DOWNLOAD_URL", "")
+else:
+    # setting this will override KMZ_DOWNLOAD_PATH to an absolute / external
+    # url. We do this by default if the release env is not dev
+    set_option("KMZ_DOWNLOAD_URL", "https://public.peeringdb.com/peeringdb.kmz")
+
 # Keys
-set_from_env("MELISSA_KEY")
+set_from_env("MELISSA_KEY", "")
 set_from_env("GOOGLE_GEOLOC_API_KEY")
 
 set_from_env("RDAP_LACNIC_APIKEY")
@@ -362,6 +410,10 @@ set_option("API_THROTTLE_MELISSA_RATE_ORG", "10/minute")
 
 set_option("API_THROTTLE_MELISSA_ENABLED_IP", False)
 set_option("API_THROTTLE_MELISSA_RATE_IP", "1/minute")
+
+# configuration for write request limiting in the api (#1322)
+
+set_option("API_THROTTLE_RATE_WRITE", "100/minute")
 
 # Configuration for response-size rate limiting in the api (#1126)
 
@@ -456,6 +508,8 @@ set_option(
         "view_username_retrieve_initiate": "2/m",
         "view_import_ixlan_ixf_preview": "1/m",
         "view_import_net_ixf_postmortem": "1/m",
+        "view_verified_update_POST": "3/m",
+        "view_verified_update_accept_POST": "4/m",
     },
 )
 
@@ -512,10 +566,10 @@ ADMINS = [
 ]
 MANAGERS = ADMINS
 
-MEDIA_ROOT = os.path.abspath(os.path.join(BASE_DIR, "media"))
+set_option("MEDIA_ROOT", os.path.abspath(os.path.join(BASE_DIR, "media")))
 MEDIA_URL = f"/m/{PEERINGDB_VERSION}/"
 
-STATIC_ROOT = os.path.abspath(os.path.join(BASE_DIR, "static"))
+set_option("STATIC_ROOT", os.path.abspath(os.path.join(BASE_DIR, "static")))
 STATIC_URL = f"/s/{PEERINGDB_VERSION}/"
 
 # limit error emails (2/minute)
@@ -535,13 +589,14 @@ set_option("SESSION_ENGINE", "django.contrib.sessions.backends.db")
 set_option("DEFAULT_CACHE_BACKEND", "DatabaseCache")
 set_option("ERROR_EMAILS_CACHE_BACKEND", "LocMemCache")
 set_option("NEGATIVE_CACHE_BACKEND", "RedisCache")
+set_option("GEO_CACHE_BACKEND", "DatabaseCache.geo")
 
 # only relevant if SESSION_ENGINE = "django.contrib.sessions.backends.cache"
 set_option("SESSION_CACHE_ALIAS", "session")
 set_option("SESSION_CACHE_BACKEND", "RedisCache")
 
 # setup caches
-cache_names = ["default", "negative", "session", "error_emails"]
+cache_names = ["default", "negative", "session", "error_emails", "geo"]
 for cache_name in cache_names:
     if cache_name not in CACHES:
         CACHES[cache_name] = get_cache_backend(cache_name)
@@ -673,13 +728,13 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.sites",
     "django.contrib.messages",
-    "django.contrib.staticfiles",
     "haystack",
     "django_otp",
     "django_otp.plugins.otp_static",
     "django_otp.plugins.otp_totp",
     "django_otp.plugins.otp_email",
     "two_factor",
+    "two_factor.plugins.email",
     "dal",
     "dal_select2",
     "grappelli",
@@ -700,6 +755,7 @@ INSTALLED_APPS = [
     "django_tables2",
     "oauth2_provider",
     "peeringdb_server",
+    "django.contrib.staticfiles",
     "django_security_keys",
     "reversion",
     "captcha",
@@ -736,6 +792,7 @@ _TEMPLATE_CONTEXT_PROCESSORS = (
     "django.template.context_processors.static",
     "django.template.context_processors.tz",
     "django.contrib.messages.context_processors.messages",
+    "peeringdb_server.context_processors.theme_mode",
 )
 
 _TEMPLATE_DIRS = (os.path.join(BASE_DIR, "peeringdb_server", "templates"),)
@@ -798,6 +855,7 @@ MIDDLEWARE = (
     "csp.middleware.CSPMiddleware",
     "peeringdb_server.middleware.PDBSessionMiddleware",
     "peeringdb_server.middleware.CacheControlMiddleware",
+    "peeringdb_server.middleware.ActivateUserLocaleMiddleware",
     "django.middleware.locale.LocaleMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
@@ -825,9 +883,11 @@ ROOT_URLCONF = "mainsite.urls"
 
 DEFAULT_AUTO_FIELD = "django.db.models.AutoField"
 
+set_from_env("FLAG_BAD_DATA_NEEDS_AUTH", None)
 
 # email vars should be already set from the release environment file
 # override here from env if set
+
 set_from_env("EMAIL_HOST")
 set_from_env("EMAIL_PORT")
 set_from_env("EMAIL_HOST_USER")
@@ -892,9 +952,9 @@ set_from_file("OIDC_RSA_PRIVATE_KEY", OIDC_RSA_PRIVATE_KEY_ACTIVE_PATH, "", str)
 
 
 AUTHENTICATION_BACKENDS += (
-    # for passwordless auth using security-key
+    # for passkey auth using security-key
     # this needs to be first so it can do some clean up
-    "django_security_keys.backends.PasswordlessAuthenticationBackend",
+    "django_security_keys.backends.PasskeyAuthenticationBackend",
     # for OAuth provider
     "oauth2_provider.backends.OAuth2Backend",
     # for OAuth against external sources
@@ -920,6 +980,7 @@ OAUTH2_PROVIDER = {
         SupportedScopes.PROFILE: "user profile",
         SupportedScopes.EMAIL: "email address",
         SupportedScopes.NETWORKS: "list of user networks and permissions",
+        SupportedScopes.AMR: "authentication method reference",
     },
     "ALLOWED_REDIRECT_URI_SCHEMES": ["https"],
     "REQUEST_APPROVAL_PROMPT": "auto",
@@ -930,6 +991,8 @@ OAUTH2_PROVIDER = {
 # migration 0085 has been applied.
 
 set_option("OAUTH2_PROVIDER_APPLICATION_MODEL", "oauth2_provider.Application")
+set_option("OAUTH2_PROVIDER_GRANT_MODEL", "oauth2_provider.Grant")
+set_option("OAUTH2_PROVIDER_ACCESS_TOKEN_MODEL", "oauth2_provider.AccessToken")
 
 # This is setting is for cookie timeout for oauth sessions.
 # After the timeout, the ongoing oauth session would expire.
@@ -942,18 +1005,40 @@ AUTHENTICATION_BACKENDS += ("django_grainy.backends.GrainyBackend",)
 
 ## Django Elasticsearch DSL
 
-INSTALLED_APPS.append("django_elasticsearch_dsl")
 
-set_from_env("ELASTICSEARCH_HOST", "elasticsearch:9200")
+set_from_env("ELASTICSEARCH_URL", "")
+# same env var as used by ES server docker image
+set_from_env("ELASTIC_PASSWORD", "")
 
-ELASTICSEARCH_DSL = {
-    "default": {"hosts": ELASTICSEARCH_HOST},
-}
+if ELASTICSEARCH_URL:
+    INSTALLED_APPS.append("django_elasticsearch_dsl")
+    ELASTICSEARCH_DSL = {
+        "default": {
+            "hosts": ELASTICSEARCH_URL,
+            "http_auth": ("elastic", ELASTIC_PASSWORD),
+            "verify_certs": False,
+        }
+    }
+    # stop ES from spamming about unsigned certs
+    urllib3.disable_warnings()
 
-ELASTICSEARCH_DSL_INDEX_SETTINGS = {"number_of_shards": 1}
-ELASTICSEARCH_DSL_SIGNAL_PROCESSOR = (
-    "peeringdb_server.signals.ESSilentRealTimeSignalProcessor"
-)
+    ELASTICSEARCH_DSL_INDEX_SETTINGS = {"number_of_shards": 1}
+    ELASTICSEARCH_DSL_SIGNAL_PROCESSOR = (
+        "peeringdb_server.signals.ESSilentRealTimeSignalProcessor"
+    )
+else:
+    # disable ES
+
+    ELASTICSEARCH_DSL_AUTOSYNC = False
+    ELASTICSEARCH_DSL_AUTO_REFRESH = False
+
+# Elasticsearch score boost configuration
+set_option("ES_MATCH_PHRASE_BOOST", 10.0)
+set_option("ES_MATCH_PHRASE_PREFIX_BOOST", 5.0)
+set_option("ES_QUERY_STRING_BOOST", 2.0)
+
+# Set Elasticsearch request timeout
+set_option("ES_REQUEST_TIMEOUT", 30.0)
 
 ## Django Rest Framework
 
@@ -987,6 +1072,7 @@ if API_THROTTLE_ENABLED:
                 "peeringdb_server.rest_throttles.ResponseSizeThrottle",
                 "peeringdb_server.rest_throttles.FilterDistanceThrottle",
                 "peeringdb_server.rest_throttles.MelissaThrottle",
+                "peeringdb_server.rest_throttles.WriteRateThrottle",
             ),
             "DEFAULT_THROTTLE_RATES": {
                 "anon": API_THROTTLE_RATE_ANON,
@@ -1001,6 +1087,7 @@ if API_THROTTLE_ENABLED:
                 "melissa_org": API_THROTTLE_MELISSA_RATE_ORG,
                 "melissa_ip": API_THROTTLE_MELISSA_RATE_IP,
                 "melissa_admin": API_THROTTLE_MELISSA_RATE_ADMIN,
+                "write_api": API_THROTTLE_RATE_WRITE,
             },
         }
     )
@@ -1021,6 +1108,7 @@ set_option("SPONSORSHIPS_EMAIL", SERVER_EMAIL)
 
 
 set_option("API_URL", "https://www.peeringdb.com/api")
+set_option("PAGE_SIZE", 250)
 set_option("API_DEPTH_ROW_LIMIT", 250)
 
 # limit results for the standard search
@@ -1037,6 +1125,9 @@ set_option("SEARCH_MAIN_ENTITY_BOOST", 1.5)
 
 set_option("BASE_URL", "http://localhost")
 set_option("PASSWORD_RESET_URL", os.path.join(BASE_URL, "reset-password"))
+
+# Sets the maximum allowed length for user passwords.
+set_option("MAX_LENGTH_PASSWORD", 1024)
 
 ACCOUNT_EMAIL_CONFIRMATION_ANONYMOUS_REDIRECT_URL = "/login"
 ACCOUNT_EMAIL_CONFIRMATION_AUTHENTICATED_REDIRECT_URL = "/verify"
@@ -1101,7 +1192,7 @@ set_option(
         },
         "backends": {
             "django_peeringdb": {
-                "min": (2, 3, 0, 1),
+                "min": (3, 3, 0),
                 "max": (255, 0),
             },
         },
@@ -1110,24 +1201,24 @@ set_option(
 
 set_option("IXF_POSTMORTEM_LIMIT", 250)
 
-# when encountering problems where an exchange's ix-f feed
+# when encountering problems where an exchange's IX-F feed
 # becomes unavilable / unparsable this setting controls
 # the interval in which we communicate the issue to them (hours)
 set_option("IXF_PARSE_ERROR_NOTIFICATION_PERIOD", 360)
 
-# toggle the creation of DeskPRO tickets from ix-f importer
+# toggle the creation of DeskPRO tickets from IX-F importer
 # conflicts
 set_option("IXF_TICKET_ON_CONFLICT", True)
 
-# send the ix-f importer generated tickets to deskpro
+# send the IX-F importer generated tickets to deskpro
 set_option("IXF_SEND_TICKETS", False)
 
 # toggle the notification of exchanges via email
-# for ix-f importer conflicts
+# for IX-F importer conflicts
 set_option("IXF_NOTIFY_IX_ON_CONFLICT", False)
 
 # toggle the notification of networks via email
-# for ix-f importer conflicts
+# for IX-F importer conflicts
 set_option("IXF_NOTIFY_NET_ON_CONFLICT", False)
 
 # number of days of a conflict being unresolved before
@@ -1147,7 +1238,7 @@ set_option("IXF_REMOVE_STALE_NETIXLAN_NOTIFY_COUNT", 3)
 set_option("IXF_REMOVE_STALE_NETIXLAN_NOTIFY_PERIOD", 30)
 
 # on / off toggle for automatic stale netixlan removal
-# through ix-f (#1271)
+# through IX-F (#1271)
 #
 # default was changed to False as part of #1360
 set_option("IXF_REMOVE_STALE_NETIXLAN", False)
@@ -1188,8 +1279,14 @@ set_option("DEFAULT_SELF_FAC", 13346)
 set_option("DEFAULT_SELF_CARRIER", 66)
 set_option("DEFAULT_SELF_CAMPUS", 25)
 set_option("CAMPUS_MAX_DISTANCE", 50)
+set_option("FACILITY_MAX_DISTANCE_GEOCODE_NOT_EXISTS", 50)
+set_option("FACILITY_MAX_DISTANCE_GEOCODE_EXISTS", 1)
 
 set_option("TUTORIAL_MODE", False)
+set_option(
+    "TUTORIAL_MODE_MESSAGE",
+    "The tutorial environment is automatically restored from production when a new release is deployed. Any changes made here will not be permanent.",
+)
 
 #'guest' user group
 GUEST_GROUP_ID = 1
@@ -1314,6 +1411,9 @@ set_option("NOTIFY_ORPHANED_USER_DAYS", 30)
 # This is so users have some time to affiliate naturally. (days)
 set_option("MIN_AGE_ORPHANED_USER_DAYS", 14)
 
+# Setting for number of days before deleting pending user to organization affiliation requests
+set_option("AFFILIATION_REQUEST_DELETE_DAYS", 90)
+
 # Notification period to notify organizations of users missing 2FA (days)
 set_option("NOTIFY_MISSING_2FA_DAYS", 30)
 
@@ -1356,7 +1456,27 @@ set_from_env(
     "RIR_ALLOCATION_DATA_PATH", os.path.join(API_CACHE_ROOT, "rdap-rir-status")
 )
 
+# Setting for number of days before deleting notok RIR
+set_option("KEEP_RIR_STATUS", 90)
+
+# A toggle for RIR status check
+set_option("AUTO_UPDATE_RIR_STATUS", True)
+
 set_option("RIR_ALLOCATION_DATA_CACHE_DAYS", 1)
+
+# A toggle for read only mode
+set_option("DJANGO_READ_ONLY", False)
+
+# A toggle to skip updating the last_login on login
+set_option("SKIP_LAST_LOGIN_UPDATE", False)
+
+if DJANGO_READ_ONLY:
+    INSTALLED_APPS += [
+        "django_read_only",
+    ]
+
+# show last database sync
+set_from_env("DATABASE_LAST_SYNC", None)
 
 
 if TUTORIAL_MODE:
@@ -1387,7 +1507,28 @@ set_option("PEERINGDB_SYNC_PASSWORD", "")
 set_option("PEERINGDB_SYNC_API_KEY", "")
 
 # peeringdb sync cache
-set_option("PEERINGDB_SYNC_CACHE_URL", "https://cache.peeringdb.com")
+set_option("PEERINGDB_SYNC_CACHE_URL", "https://public.peeringdb.com")
 set_option("PEERINGDB_SYNC_CACHE_DIR", os.path.join(BASE_DIR, "sync-cache"))
+
+# The default protocol used by django-allauth when generating URLs in email message to be https.
+# https://docs.allauth.org/en/dev/account/configuration.html
+set_option("ACCOUNT_DEFAULT_HTTP_PROTOCOL", "https")
+
+# Geo normalization settings
+set_option("GEO_COUNTRIES_WITH_STATES", ["US", "CA"])
+set_option(
+    "GEO_SOVEREIGN_MICROSTATES",
+    [
+        "AD",  # Andorra
+        "LI",  # Liechtenstein
+        "MC",  # Monaco
+        "MT",  # Malta
+        "MV",  # Maldives
+        "SC",  # Seychelles
+        "SG",  # Singapore
+        "SM",  # San Marino
+        "VA",  # Vatican City
+    ],
+)
 
 print_debug(f"loaded settings for PeeringDB {PEERINGDB_VERSION} (DEBUG: {DEBUG})")

@@ -1,0 +1,8 @@
+{% load i18n %}
+{% language 'en' %}
+For the following networks RIR assignment status changed from unassigned to assigned on {{ date }}:
+They are no longer flagged for automatic deletion.
+
+{% for net in networks %}- AS{{ net.asn }} - {{ net.name }} - RIR Status: {{ net.rir_status }} - <a href="{{ net.view_url }}">{{ net.view_url }}</a>
+{% endfor %}
+{% endlanguage %}

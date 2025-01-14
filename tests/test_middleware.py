@@ -7,7 +7,7 @@ from django.http import HttpResponse
 from django.test import (
     Client,
     RequestFactory,
-    SimpleTestCase,
+    TestCase,
     modify_settings,
     override_settings,
 )
@@ -15,7 +15,11 @@ from django.urls.resolvers import ResolverMatch
 from rest_framework.response import Response
 from rest_framework.test import APIClient, APITestCase
 
-from peeringdb_server.middleware import PDBCommonMiddleware
+from peeringdb_server.middleware import (
+    ERR_BASE64_DECODE,
+    ERR_VALUE_ERROR,
+    PDBCommonMiddleware,
+)
 from peeringdb_server.models import Organization, OrganizationAPIKey, User, UserAPIKey
 
 from .util import reset_group_ids
@@ -26,9 +30,10 @@ def get_response_empty(request):
 
 
 @override_settings(ROOT_URLCONF="middleware.urls")
-class PDBCommonMiddlewareTest(SimpleTestCase):
+class PDBCommonMiddlewareTest(TestCase):
     rf = RequestFactory()
 
+    @pytest.mark.django_db
     @override_settings(PDB_PREPEND_WWW=True)
     def test_prepend_www(self):
         request = self.rf.get("/path/")
@@ -52,12 +57,14 @@ class PDBPermissionMiddlewareTest(APITestCase):
         response = self.client.get("/api/fac")
         self.assertEqual(response.status_code, 401)
         self.assertEqual(response.headers.get("X-Auth-ID"), "apikey_bogus")
+        self.assertEqual(response.headers.get("X-Auth-Status"), "unauthenticated")
 
     def test_bogus_credentials_auth_id_response(self):
         self.client.credentials(HTTP_AUTHORIZATION="Basic Ym9ndXM6Ym9ndXM=")
         response = self.client.get("/api/fac")
         self.assertEqual(response.status_code, 401)
         self.assertEqual(response.headers.get("X-Auth-ID"), "bogus")
+        self.assertEqual(response.headers.get("X-Auth-Status"), "unauthenticated")
 
     def test_auth_id_api_key(self):
         user = User.objects.create(username="test_user")
@@ -115,12 +122,14 @@ class PDBPermissionMiddlewareTest(APITestCase):
         response = self.client.get("/api/fac")
         self.assertEqual(response.status_code, 200)
         assert response.headers.get("X-Auth-ID") == f"u{user.id}"
+        self.assertEqual(response.headers.get("X-Auth-Status"), "authenticated")
 
         # test that header gets cleared between requests
         other_client = APIClient()
         response = other_client.get("/api/fac")
         self.assertEqual(response.status_code, 200)
         assert response.headers.get("X-Auth-ID") is None
+        self.assertEqual(response.headers.get("X-Auth-Status"), "unauthenticated")
 
     def test_auth_id_basic_auth(self):
         user = User.objects.create(username="test_user")
@@ -133,12 +142,14 @@ class PDBPermissionMiddlewareTest(APITestCase):
         response = self.client.get("/api/fac")
         self.assertEqual(response.status_code, 200)
         assert response.headers.get("X-Auth-ID") == f"u{user.id}"
+        self.assertEqual(response.headers.get("X-Auth-Status"), "authenticated")
 
         # test that header gets cleared between requests
         other_client = APIClient()
         response = other_client.get("/api/fac")
         self.assertEqual(response.status_code, 200)
         assert response.headers.get("X-Auth-ID") is None
+        self.assertEqual(response.headers.get("X-Auth-Status"), "unauthenticated")
 
 
 class RedisNegativeCacheMiddlewareTest(APITestCase):
@@ -340,7 +351,6 @@ def test_pdb_session_middleware(path, expected):
 @override_settings(CSRF_USE_SESSIONS=False)
 @patch("django.urls.resolvers.URLResolver.resolve")
 def test_pdb_negative_cache(mock_resolve, http_status_code, expected):
-
     """
     Tests negative caching outside of /api endpoints
     """
@@ -380,7 +390,6 @@ def test_pdb_negative_cache(mock_resolve, http_status_code, expected):
 @override_settings(CSRF_USE_SESSIONS=False, NEGATIVE_CACHE_REPEATED_RATE_LIMIT=3)
 @patch("django.urls.resolvers.URLResolver.resolve")
 def test_pdb_negative_cache_ratelimit(mock_resolve, http_status_code, expected):
-
     """
     Tests negative caching rate limiting
     """
@@ -404,3 +413,67 @@ def test_pdb_negative_cache_ratelimit(mock_resolve, http_status_code, expected):
         else:
             assert response.status_code == 429
             assert response.headers.get("X-Throttled-Response") == "True"
+
+
+class ActivateUserLocaleMiddlewareTests(APITestCase):
+    """
+    Test case for ActivateUserLocaleMiddleware class
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create(username="test_user")
+        self.user.set_password("test_user")
+        self.user.locale = "en"
+        self.user.save()
+        self.client.force_login(self.user)
+        self.language_codes = [code for code, _ in settings.LANGUAGES if code != "oc"]
+
+    def test_django_language_cookies_set(self):
+        for language in self.language_codes:
+            self.client.cookies["django_language"] = language
+            request = self.client.get("/")
+            content = request.content.decode("utf-8")
+            self.assertIn("django_language", self.client.cookies)
+            self.assertIn(f'<option value="{language}" selected>', content)
+            self.assertEqual(request.status_code, 200)
+
+    def test_django_language_user_locale(self):
+        for language in self.language_codes:
+            self.user.locale = language
+            self.user.save()
+            request = self.client.get("/")
+            content = request.content.decode("utf-8")
+            self.assertNotIn("django_language", self.client.cookies)
+            self.assertIn(f'<option value="{language}" selected>', content)
+            self.assertEqual(request.status_code, 200)
+
+
+@pytest.mark.parametrize(
+    "auth,status_code,message,success",
+    (
+        ("", 400, ERR_VALUE_ERROR, False),
+        ("base64", 400, ERR_BASE64_DECODE, False),
+        ("123", 400, ERR_BASE64_DECODE, False),
+        ("https://testbad:testpass@beta.peeringdb.com", 400, ERR_BASE64_DECODE, False),
+        ("Ym9ndXM6Ym9ndXM=", 401, "Invalid username or password", False),
+        (None, 200, "Invalid username or password", True),
+    ),
+)
+@pytest.mark.django_db
+@override_settings(CSRF_USE_SESSIONS=False)
+def test_auth_basic(auth, status_code, message, success):
+    if success:
+        user = User.objects.create(username="test_user")
+        user.set_password("test_user")
+        user.save()
+        auth = base64.b64encode(b"test_user:test_user").decode("utf-8")
+    client = Client()
+    headers = {"HTTP_AUTHORIZATION": f"Basic {auth}"}
+    res = client.get("/api/fac", **headers)
+    json = res.json()
+    if success:
+        assert json["meta"].get("error") is None
+    else:
+        assert json["meta"]["error"] == message
+    assert res.status_code == status_code

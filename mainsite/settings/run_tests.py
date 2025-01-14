@@ -53,11 +53,17 @@ RATELIMITS = {
     "request_translation": "10/m",
     "view_import_ixlan_ixf_preview": "1/m",
     "view_import_net_ixf_postmortem": "1/m",
+    "view_verified_update_POST": "3/m",
+    "view_verified_update_accept_POST": "4/m",
 }
+
 GUEST_GROUP_ID = 1
 USER_GROUP_ID = 2
 WHOOSH_STORAGE = "ram"
+ELASTICSEARCH_DSL_AUTOSYNC = False
+ELASTICSEARCH_DSL_AUTO_REFRESH = False
 IXF_REMOVE_STALE_NETIXLAN = True
+
 CACHES["negative"] = {
     "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
     "LOCATION": "negative",

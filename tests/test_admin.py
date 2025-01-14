@@ -439,10 +439,7 @@ class AdminTests(TestCase):
         netixlan_b = ixlan.netixlan_set.all()[1]
 
         url = reverse(
-            "admin:{}_{}_change".format(
-                ixlan._meta.app_label,
-                ixlan._meta.object_name,
-            ).lower(),
+            f"admin:{ixlan._meta.app_label}_{ixlan._meta.object_name}_change".lower(),
             args=(ixlan.id,),
         )
 
@@ -603,8 +600,8 @@ class AdminTests(TestCase):
 
         # create a verification queue item we can check
         org = models.Organization.objects.all().first()
-        _ = models.Network.objects.create(
-            name="Unverified network", org=org, asn=33333, status="pending"
+        _ = models.Facility.objects.create(
+            name="Unverified facility", org=org, status="pending"
         )
         vqitem = models.VerificationQueueItem.objects.all().first()
         assert vqitem
@@ -616,7 +613,7 @@ class AdminTests(TestCase):
         # create partnership we can check
         _ = models.Partnership.objects.create(org=org)
 
-        # create ixlan ix-f import log we can check
+        # create ixlan IX-F import log we can check
         ixfmemberdata = models.IXFMemberData.instantiate(
             ixlan=models.NetworkIXLan.objects.first().ixlan,
             ipaddr4=models.NetworkIXLan.objects.first().ipaddr4,
@@ -625,7 +622,7 @@ class AdminTests(TestCase):
         )
         ixfmemberdata.save()
 
-        # create ixlan ix-f import log we can check
+        # create ixlan IX-F import log we can check
         _ = models.IXLanIXFMemberImportLog.objects.create(
             ixlan=models.IXLan.objects.all().first()
         )
@@ -726,7 +723,7 @@ class AdminTests(TestCase):
 
         assert user.is_staff
 
-        search_str = '<a href="/cp/logout/"'
+        search_str = 'action="/cp/logout/"'
 
         for op in ops:
             for cls in classes:
@@ -745,15 +742,15 @@ class AdminTests(TestCase):
                         continue
 
                 url = reverse(
-                    "admin:{}_{}_{}".format(
-                        cls._meta.app_label, cls._meta.object_name, op
-                    ).lower(),
+                    f"admin:{cls._meta.app_label}_{cls._meta.object_name}_{op}".lower(),
                     args=args,
                 )
                 response = client.get(url)
                 cont = response.content.decode("utf-8")
                 assert response.status_code == kwargs.get(f"status_{op}", 200)
                 if response.status_code == 200:
+                    print(cont)
+                    print(url)
                     assert search_str in cont
 
         for url, method, status in extra_urls:
@@ -780,9 +777,7 @@ class AdminTests(TestCase):
 
         cls = models.Organization
         url = reverse(
-            "admin:{}_{}_changelist".format(
-                cls._meta.app_label, cls._meta.object_name
-            ).lower(),
+            f"admin:{cls._meta.app_label}_{cls._meta.object_name}_changelist".lower(),
         )
         response = client.get(f"{url}?sz={sz}")
         cont = response.content.decode("utf-8")

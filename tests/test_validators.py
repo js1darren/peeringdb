@@ -1,5 +1,6 @@
 import ipaddress
 import os
+from unittest.mock import patch
 
 import pytest
 import requests
@@ -8,7 +9,9 @@ from django.core.cache import cache
 from django.core.exceptions import ValidationError
 from django.core.management import call_command
 from django.test import RequestFactory, override_settings
+from rest_framework.exceptions import ValidationError as RestValidationError
 
+import peeringdb_server.geo as geo
 from peeringdb_server.context import current_request
 from peeringdb_server.models import (
     Facility,
@@ -23,9 +26,13 @@ from peeringdb_server.models import (
 )
 from peeringdb_server.validators import (
     validate_address_space,
+    validate_asn_prefix,
+    validate_distance_geocode,
     validate_info_prefixes4,
     validate_info_prefixes6,
     validate_irr_as_set,
+    validate_latitude,
+    validate_longitude,
     validate_phonenumber,
     validate_prefix_overlap,
     validate_social_media,
@@ -195,8 +202,10 @@ def test_validate_prefix_overlap():
         ("AS-15562", "AS-15562"),
         ("AS15562 AS33333", "AS15562 AS33333"),
         # hyphenated source validation
-        ("AS-20C@ARIN-NONAUTH", "AS-20C@ARIN-NONAUTH"),
-        ("ARIN-NONAUTH::AS-20C", "ARIN-NONAUTH::AS-20C"),
+        # we currently do not have valid hyphentated sources in the IRR_SOURCE
+        # so this test is commented out
+        # ("AS-20C@ARIN-NONAUTH", "AS-20C@ARIN-NONAUTH"),
+        # ("ARIN-NONAUTH::AS-20C", "ARIN-NONAUTH::AS-20C"),
         # fail validation
         ("UNKNOWN::AS-FOO", False),
         ("AS-FOO@UNKNOWN", False),
@@ -407,7 +416,7 @@ def test_ghost_peer_vs_real_peer_one_netixlan():
         asn=1010, name="AS1010", status="ok", org=org
     )
     ixlan = ix.ixlan
-    ixlan.ixf_ixp_member_list_url = "https://localhost/ix-f"
+    ixlan.ixf_ixp_member_list_url = "https://localhost/IX-F"
     ixlan.save()
 
     IXLanPrefix.objects.create(
@@ -439,20 +448,20 @@ def test_ghost_peer_vs_real_peer_one_netixlan():
         operational=False,
     )
 
-    # setup ix-f cache
+    # setup IX-F cache
 
     data = setup_test_data("ixf.member.1")
     cache.set(f"IXF-CACHE-{ix.ixlan.ixf_ixp_member_list_url}", data)
 
     ix = ixlan.ix
 
-    # real peer should exist in ix-f data
+    # real peer should exist in IX-F data
 
     real4, real6 = ix.peer_exists_in_ixf_data(1001, IP4, IP6)
     assert real4
     assert real6
 
-    # ghost peer should NOT exist in ix-f data
+    # ghost peer should NOT exist in IX-F data
 
     ghost4, ghost6 = ix.peer_exists_in_ixf_data(1010, IP4, IP6)
     assert not ghost4
@@ -504,7 +513,7 @@ def test_ghost_peer_vs_real_peer_two_netixlan():
         asn=1010, name="AS1010", status="ok", org=org
     )
     ixlan = ix.ixlan
-    ixlan.ixf_ixp_member_list_url = "https://localhost/ix-f"
+    ixlan.ixf_ixp_member_list_url = "https://localhost/IX-F"
     ixlan.save()
 
     IXLanPrefix.objects.create(
@@ -548,20 +557,20 @@ def test_ghost_peer_vs_real_peer_two_netixlan():
         operational=False,
     )
 
-    # setup ix-f data
+    # setup IX-F data
 
     data = setup_test_data("ixf.member.1")
     cache.set(f"IXF-CACHE-{ix.ixlan.ixf_ixp_member_list_url}", data)
 
     ix = ixlan.ix
 
-    # real peer should exist in ix-f data
+    # real peer should exist in IX-F data
 
     real4, real6 = ix.peer_exists_in_ixf_data(1001, IP4, IP6)
     assert real4
     assert real6
 
-    # ghost peer should NOT exist in ix-f data
+    # ghost peer should NOT exist in IX-F data
 
     ghost4, ghost6 = ix.peer_exists_in_ixf_data(1010, IP4, IP6)
     assert not ghost4
@@ -614,7 +623,7 @@ def test_ghost_peer_vs_real_peer_two_netixlan_partial():
         asn=1010, name="AS1010", status="ok", org=org
     )
     ixlan = ix.ixlan
-    ixlan.ixf_ixp_member_list_url = "https://localhost/ix-f"
+    ixlan.ixf_ixp_member_list_url = "https://localhost/IX-F"
     ixlan.save()
 
     IXLanPrefix.objects.create(
@@ -658,20 +667,20 @@ def test_ghost_peer_vs_real_peer_two_netixlan_partial():
         operational=False,
     )
 
-    # setup ix-f data
+    # setup IX-F data
 
     data = setup_test_data("ixf.member.1")
     cache.set(f"IXF-CACHE-{ix.ixlan.ixf_ixp_member_list_url}", data)
 
     ix = ixlan.ix
 
-    # real peer should exist in ix-f data
+    # real peer should exist in IX-F data
 
     real4, real6 = ix.peer_exists_in_ixf_data(1001, IP4, IP6)
     assert real4
     assert real6
 
-    # ghost peer should NOT exist in ix-f data
+    # ghost peer should NOT exist in IX-F data
 
     ghost4, ghost6 = ix.peer_exists_in_ixf_data(1010, IP4, IP6)
     assert not ghost4
@@ -715,7 +724,7 @@ def test_ghost_peer_vs_real_peer_invalid_ixf_data():
     """
     Tests that a real peer can claim the ip addresses of a gohst peer. #983
 
-    Test the handling of invalid ix-f data, in which case the ghost peer vs real peer
+    Test the handling of invalid IX-F data, in which case the ghost peer vs real peer
     logic should be skipped.
     """
 
@@ -728,7 +737,7 @@ def test_ghost_peer_vs_real_peer_invalid_ixf_data():
         asn=1010, name="AS1010", status="ok", org=org
     )
     ixlan = ix.ixlan
-    ixlan.ixf_ixp_member_list_url = "https://localhost/ix-f"
+    ixlan.ixf_ixp_member_list_url = "https://localhost/IX-F"
     ixlan.save()
 
     IXLanPrefix.objects.create(
@@ -759,7 +768,7 @@ def test_ghost_peer_vs_real_peer_invalid_ixf_data():
         is_rs_peer=False,
         operational=False,
     )
-    # setup ix-f data
+    # setup IX-F data
 
     cache.set(f"IXF-CACHE-{ix.ixlan.ixf_ixp_member_list_url}", {"invalid": "data"})
 
@@ -789,11 +798,11 @@ def test_ghost_peer_vs_real_peer_invalid_ixf_data():
         (
             [
                 {"service": "website", "identifier": "https://www.example.com"},
-                {"service": "twitter", "identifier": "unknown12"},
+                {"service": "x", "identifier": "unknown12"},
             ],
             [
                 {"service": "website", "identifier": "https://www.example.com"},
-                {"service": "twitter", "identifier": "unknown12"},
+                {"service": "x", "identifier": "unknown12"},
             ],
         ),
         (
@@ -820,7 +829,7 @@ def test_ghost_peer_vs_real_peer_invalid_ixf_data():
         (
             [
                 {"service": "website", "identifier": "https://www.example.com"},
-                {"service": "twitter", "identifier": "unknown11."},
+                {"service": "x", "identifier": "unknown11."},
             ],
             False,
         ),
@@ -828,7 +837,7 @@ def test_ghost_peer_vs_real_peer_invalid_ixf_data():
         (
             [
                 {"service": "website", "identifier": ""},
-                {"service": "twitter", "identifier": "unknown"},
+                {"service": "x", "identifier": "unknown"},
             ],
             False,
         ),
@@ -842,7 +851,7 @@ def test_ghost_peer_vs_real_peer_invalid_ixf_data():
         (
             [
                 {"service": "website", "identifier": None},
-                {"service": "twitter", "identifier": "unknown"},
+                {"service": "", "identifier": "unknown"},
             ],
             False,
         ),
@@ -876,10 +885,28 @@ def test_ghost_peer_vs_real_peer_invalid_ixf_data():
             },
             False,
         ),
+        (
+            [
+                {"service": "x", "identifier": "aaa"},
+            ],
+            False,
+        ),
+        (
+            [
+                {"service": "x", "identifier": "a" * 16},
+            ],
+            False,
+        ),
+        (
+            [
+                {"service": "x", "identifier": "$bla/"},
+            ],
+            False,
+        ),
     ],
 )
 @pytest.mark.django_db
-def test_validate_ssocial_media(value, validated):
+def test_validate_social_media(value, validated):
     if not validated:
         with pytest.raises(ValidationError):
             validate_social_media(value)
@@ -913,3 +940,190 @@ def test_validate_website_override(website, org_website, validated):
             validate_website_override(website, org_website)
     else:
         assert validate_website_override(website, org_website) == validated
+
+
+@pytest.mark.django_db
+def test_org_create_with_none_social_media():
+    org = Organization.objects.create(name="Test org", status="ok", social_media=None)
+    assert org.social_media == {}
+
+
+@pytest.mark.parametrize(
+    "value,is_valid,validated",
+    [
+        # success validation
+        ("63311", True, "63311"),
+        ("as63311", True, "63311"),
+        ("asn63311", True, "63311"),
+        ("AS63311", True, "63311"),
+        ("ASN63311", True, "63311"),
+        # fail validation
+        ("AN63311", False, None),
+        ("6as3311", False, None),
+        ("63311asn", False, None),
+    ],
+)
+@pytest.mark.django_db
+def test_validate_asn_prefix(value, is_valid, validated):
+    print(is_valid)
+    if not is_valid:
+        with pytest.raises(RestValidationError):
+            validate_asn_prefix(value)
+    else:
+        assert validate_asn_prefix(value) == validated
+
+
+@pytest.mark.parametrize(
+    "value,is_valid,validated",
+    [
+        # success validation
+        (37.7749, True, 37.7749),
+        (-23.5505, True, -23.5505),
+        (51.5074, True, 51.5074),
+        (40.7128, True, 40.7128),
+        ("-33.8688", True, -33.8688),
+        # fail validation
+        (95.1234, False, None),
+        (-120.5678, False, None),
+        ("-122.5678", False, None),
+        ("abcdef", False, None),
+    ],
+)
+@pytest.mark.django_db
+def test_validate_latitude(value, is_valid, validated):
+    if not is_valid:
+        with pytest.raises(ValidationError):
+            validate_latitude(value)
+    else:
+        assert validate_latitude(value) == validated
+
+
+@pytest.mark.parametrize(
+    "value,is_valid,validated",
+    [
+        # success validation
+        (-122.4194, True, -122.4194),
+        (-46.6333, True, -46.6333),
+        (-0.1270, True, -0.1270),
+        (-74.0060, True, -74.0060),
+        ("151.2093", True, 151.2093),
+        # fail validation
+        (190.1234, False, None),
+        (-250.5678, False, None),
+        ("360.9876", False, None),
+        ("abcdef", False, None),
+    ],
+)
+@pytest.mark.django_db
+def test_validate_longitude(value, is_valid, validated):
+    if not is_valid:
+        with pytest.raises(ValidationError):
+            validate_longitude(value)
+    else:
+        assert validate_longitude(value) == validated
+
+
+def geo_mock_init(self, key, timeout):
+    pass
+
+
+def geo_gmaps_mock_geocode_freeform(location):
+    return {"lat": 40.712776, "lng": -74.005974}
+
+
+@pytest.mark.parametrize(
+    "current_geocode,new_geocode,current_city,new_city,is_valid,validated",
+    [
+        # test success with exists geocode (max 1km from previous geocode)
+        (
+            (50.951533, 1.852570),
+            (50.951533, 1.851440),
+            "london",
+            "london",
+            True,
+            (50.951533, 1.851440),
+        ),
+        (
+            (40.712776, -74.005974),
+            (40.712790, -74.003974),
+            "new york",
+            "new york",
+            True,
+            (40.712790, -74.003974),
+        ),
+        # # test fail with exists geocode (max 1km from previous geocode)
+        (
+            (40.712776, -74.005974),
+            (40.712790, -73.003974),
+            "new york",
+            "new york",
+            False,
+            None,
+        ),
+        ((50.951533, 1.852570), (51.951533, 0.851440), "london", "london", False, None),
+        # test success with not exists geocode (max 50km from city)
+        (
+            (None, None),
+            (40.712771, -74.005970),
+            "new york",
+            "new york",
+            True,
+            (40.712771, -74.005970),
+        ),
+        (
+            (None, None),
+            (40.716822, -73.991032),
+            "new york",
+            "new york",
+            True,
+            (40.716822, -73.991032),
+        ),
+        # test fail with not exists geocode (max 50km from city)
+        ((None, None), (36.169941, -115.139832), "new york", "new york", False, None),
+        ((None, None), (36.201902, -115.328808), "new york", "new york", False, None),
+    ],
+)
+@patch.object(geo.GoogleMaps, "__init__", geo_mock_init)
+@patch.object(geo.Melissa, "__init__", geo_mock_init)
+@pytest.mark.django_db
+def test_validate_distance_geocode(
+    current_geocode, new_geocode, current_city, new_city, is_valid, validated, settings
+):
+    settings.MELISSA_KEY = ""
+    settings.GOOGLE_GEOLOC_API_KEY = ""
+    with patch.object(
+        geo.GoogleMaps, "geocode_freeform", side_effect=geo_gmaps_mock_geocode_freeform
+    ):
+        if not is_valid:
+            with pytest.raises(ValidationError):
+                validate_distance_geocode(
+                    current_geocode, new_geocode, current_city, new_city
+                )
+        else:
+            assert (
+                validate_distance_geocode(
+                    current_geocode, new_geocode, current_city, new_city
+                )
+                == validated
+            )
+
+
+def test_validate_status_change():
+    org = Organization.objects.create(name="Test org", status="ok")
+    ix = InternetExchange.objects.create(name="Test exchange", status="ok", org=org)
+    ix.status = "pending"
+    with pytest.raises(ValidationError):
+        ix.clean()
+        ix.save()
+
+    fac = Facility.objects.create(name="Test facility", status="ok", org=org)
+    fac.status = "pending"
+    with pytest.raises(ValidationError):
+        fac.clean()
+        fac.save()
+
+    net = Network.objects.create(name="Test network", status="ok", org=org, asn=101)
+    net.status = "pending"
+    with pytest.raises(ValidationError):
+        net.clean()
+        net.save()

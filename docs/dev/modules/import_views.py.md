@@ -1,15 +1,5 @@
-Generated from import_views.py on 2023-04-12 10:09:44.563425
+Generated from import_views.py on 2025-01-14 18:57:08.992842
 
 # peeringdb_server.import_views
 
-Define ix-f import preview, review and post-mortem views.
-
-# Functions
----
-
-## enable_basic_auth
-`def enable_basic_auth(fn)`
-
-A simple decorator to enable basic auth for a specific view.
-
----
+Define IX-F import preview, review and post-mortem views.

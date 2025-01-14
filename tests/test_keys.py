@@ -1,5 +1,3 @@
-from lib2to3.pgen2 import token
-
 import pytest
 from django.conf import settings
 from django.test import Client, RequestFactory
@@ -165,6 +163,7 @@ def test_check_perms(org, groups):
     assert check_permissions(api_key, namespace, "u") is False
 
 
+@pytest.mark.django_db
 def test_get_key_from_request():
     key = "abcd"
     factory = RequestFactory()

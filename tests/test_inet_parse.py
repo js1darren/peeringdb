@@ -2,16 +2,14 @@ import pytest
 import pytest_filedata
 
 
+@pytest.mark.django_db
 def assert_parsed(data, parsed):
     # dump in json format for easily adding expected
-    print(
-        "echo \\\n'{}'\\\n > {}/{}.expected".format(
-            data.dumps(parsed), data.path, data.name
-        )
-    )
+    print(f"echo \\\n'{data.dumps(parsed)}'\\\n > {data.path}/{data.name}.expected")
     assert data.expected == parsed
 
 
+@pytest.mark.django_db
 @pytest_filedata.RequestsData("rdap", real_http=True)
 def test_rdap_asn_lookup(rdap, data_rdap_autnum):
     print(data_rdap_autnum.name)

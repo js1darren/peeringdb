@@ -5,6 +5,7 @@ import pytest
 from django.conf import settings
 from django.contrib.auth import get_user
 from django.contrib.auth.models import AnonymousUser, Group
+from django.core.exceptions import ValidationError
 from django.test import Client, RequestFactory, TestCase
 from django_grainy.models import GroupPermission, UserPermission
 
@@ -63,23 +64,44 @@ class ViewTestCase(ClientCase):
         self.factory = RequestFactory()
 
     def run_view_test(self, reftag):
-        id = getattr(self, reftag).id
-        # test #1 - not logged in
-        c = Client()
-        resp = c.get("/%s/%d" % (reftag, id), follow=True)
-        self.assertEqual(resp.status_code, 200)
+        obj = getattr(self, reftag)
+        formated_updated = obj.updated.isoformat().split(".")[0]
 
-        # test #2 - guest logged in (not affiliated to any org)
-        c = Client()
-        c.login(username="guest", password="guest")
-        resp = c.get("/%s/%d" % (reftag, id), follow=True)
-        self.assertEqual(resp.status_code, 200)
+        def perform_test(username=None):
+            c = Client()
+            if username:
+                c.login(username=username, password=username)
+            resp = c.get("/%s/%d" % (reftag, obj.id), follow=True)
+            content = resp.content.decode("utf-8")
+            self.assertIn(
+                f'data-edit-name="updated">{formated_updated}Z</div>', content
+            )
+            if reftag == "net":
+                if obj.netixlan_updated:
+                    self.assertIn(
+                        f'data-edit-name="netixlan_updated">{obj.netixlan_updated.isoformat().split(".")[0]}Z</div>',
+                        content,
+                    )
+                if obj.netfac_updated:
+                    self.assertIn(
+                        f'data-edit-name="netfac_updated">{obj.netfac_updated.isoformat().split(".")[0]}Z</div>',
+                        content,
+                    )
+                if obj.poc_updated:
+                    self.assertIn(
+                        f'data-edit-name="poc_updated">{obj.poc_updated.isoformat().split(".")[0]}Z</div>',
+                        content,
+                    )
+            self.assertEqual(resp.status_code, 200)
 
-        # test #3 - user logged in
-        c = Client()
-        c.login(username="user_a", password="user_a")
-        resp = c.get("/%s/%d" % (reftag, id), follow=True)
-        self.assertEqual(resp.status_code, 200)
+        # Test #1 - not logged in
+        perform_test()
+
+        # Test #2 - guest logged in (not affiliated to any org)
+        perform_test("guest")
+
+        # Test #3 - user logged in
+        perform_test("user_a")
 
 
 class TestExchangeView(ViewTestCase):
@@ -90,6 +112,41 @@ class TestExchangeView(ViewTestCase):
 class TestFacilityView(ViewTestCase):
     def test_view(self):
         self.run_view_test("fac")
+
+    def test_deprecated_floor_field(self):
+        """
+        Test that the deprecated floor field is not shown if
+        empty and shown if set
+        """
+
+        c = Client()
+        c.login(username="user_a", password="user_a")
+        resp = c.get("/fac/%d" % self.fac.id)
+        content = resp.content.decode("utf-8")
+
+        fac = self.fac
+
+        assert not fac.floor
+        assert "Floor" not in content
+
+        fac.floor = "1st"
+        fac.save()
+
+        resp = c.get("/fac/%d" % self.fac.id)
+        content = resp.content.decode("utf-8")
+
+        assert "Floor" in content
+
+        # test that calling clean raises a validation error if the field is set
+
+        with pytest.raises(ValidationError):
+            fac.clean()
+
+        # set field to empty string and test that no validation error is raised
+
+        fac.floor = ""
+        fac.clean()
+        fac.save()
 
 
 class TestCarrieriew(ViewTestCase):
@@ -105,6 +162,41 @@ class TestCampusView(ViewTestCase):
 class TestOrgView(ViewTestCase):
     def test_view(self):
         self.run_view_test("org")
+
+    def test_deprecated_floor_field(self):
+        """
+        Test that the deprecated floor field is not shown if
+        empty and shown if set
+        """
+
+        c = Client()
+        c.login(username="user_a", password="user_a")
+        resp = c.get("/org/%d" % self.org.id)
+        content = resp.content.decode("utf-8")
+
+        org = self.org
+
+        assert not org.floor
+        assert "Floor" not in content
+
+        org.floor = "1st"
+        org.save()
+
+        resp = c.get("/org/%d" % self.org.id)
+        content = resp.content.decode("utf-8")
+
+        assert "Floor" in content
+
+        # test that calling clean raises a validation error if the field is set
+
+        with pytest.raises(ValidationError):
+            org.clean()
+
+        # set field to empty string and test that no validation error is raised
+
+        org.floor = ""
+        org.clean()
+        org.save()
 
 
 class TestNetworkView(ViewTestCase):
